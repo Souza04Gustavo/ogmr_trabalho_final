@@ -11,7 +11,8 @@
         <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
             <h3 class="mb-0">Painel do Professor - Gerenciamento de Internet</h3>
             
-            <!-- FASE 5: Botões de Ação Coletiva (Passando o ID 1, que é o da Sala F203) -->
+            <a href="/logout" class="btn btn-sm btn-outline-light">Sair do Sistema</a>
+
             <div>
                 <button class="btn btn-warning btn-sm fw-bold" onclick="alterarStatusSala(1, 2)">Bloquear Todos os Alunos</button>
                 <button class="btn btn-info btn-sm fw-bold text-white" onclick="alterarStatusSala(1, 1)">Liberar Todos os Alunos</button>
@@ -25,7 +26,7 @@
                         <th>Máquina</th>
                         <th>Tipo</th>
                         <th>Porta</th>
-                        <th>Status Atual</th> <!-- Nova Coluna -->
+                        <th>Status Atual</th>
                         <th>Ação de Bloqueio (Imediato)</th>
                     </tr>
                 </thead>
@@ -83,7 +84,6 @@ function alterarStatus(porta, acao) {
     });
 }
 
-// Ação Coletiva (Fase 5)
 function alterarStatusSala(sala_id, acao) {
     let msg = acao === 2 ? "Deseja BLOQUEAR a internet de TODOS os alunos desta sala?" : "Deseja LIBERAR a internet de todos?";
     if (!confirm(msg)) return;

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 import psycopg2
 import subprocess
 
@@ -9,6 +9,8 @@ DB_HOST = "localhost"
 DB_NAME = "projeto_ogmr"
 DB_USER = "postgres"
 DB_PASS = "postgres"
+
+app.secret_key = 'chave_super_secreta_projeto_redes'
 
 def get_db_connection():
     return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
@@ -41,11 +43,31 @@ def checar_status_porta(ip, porta):
 
 @app.route('/')
 def index():
+    ip_visitante = request.remote_addr # Pega o IP de quem abriu o site
+
     conn = get_db_connection()
     cur = conn.cursor()
-    # Pega todas as máquinas e cruza com a tabela de salas e switches
+    
+    # Checa no banco se o IP de quem acessou é o do professor
+    cur.execute("SELECT * FROM maquinas WHERE ip_address = %s AND tipo = 'professor'", (ip_visitante,))
+    professor_valido = cur.fetchone()
+    
+    # Se o IP não for do professor, dá a tela de acesso negado!
+    if not professor_valido:
+        cur.close()
+        conn.close()
+        return render_template('acesso_negado.html', ip_visitante=ip_visitante), 403
+
+    # Se o IP for certo, mas ele não fez login, manda para a tela de login
+    if not session.get('logado'):
+        cur.close()
+        conn.close()
+        return redirect(url_for('login'))
+
+    # Se chegou aqui, ele é o professor e botou a senha correta
     cur.execute("""
-        SELECT m.id, m.nome_host, m.ip_address, m.mac_address, m.porta_ifindex, m.tipo, s.nome as sala_nome, sw.ip_address as switch_ip
+        SELECT m.id, m.nome_host, m.ip_address, m.mac_address, m.porta_ifindex, m.tipo,
+               s.nome as sala_nome, sw.ip_address as switch_ip, s.id as sala_id
         FROM maquinas m
         JOIN salas s ON m.sala_id = s.id
         JOIN switches sw ON m.switch_id = sw.id
@@ -54,19 +76,49 @@ def index():
     linhas_db = cur.fetchall()
     cur.close()
     conn.close()
-    
+
     maquinas = []
     for m in linhas_db:
         ip_switch = m[7]
         porta = m[4]
         status_atual = checar_status_porta(ip_switch, porta)
-        
-        # Convertendo a tupla do banco em lista para podermos adicionar o status no final
         m_lista = list(m)
-        m_lista.append(status_atual) # Vai ficar no índice 9
+        m_lista.append(status_atual) 
         maquinas.append(m_lista)
-    
+
     return render_template('index.html', maquinas=maquinas)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    ip_visitante = request.remote_addr
+    erro = None
+    
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM maquinas WHERE ip_address = %s AND tipo = 'professor'", (ip_visitante,))
+    valido = cur.fetchone()
+    cur.close()
+    conn.close()
+    
+    # Se o IP não for o do professor, nem mostra a tela bonita, barra na hora
+    if not valido:
+        return render_template('acesso_negado.html', ip_visitante=ip_visitante), 403
+
+    if request.method == 'POST':
+        senha = request.form.get('senha')
+        if senha == 'admin123':  # Senha correta
+            session['logado'] = True
+            return redirect(url_for('index'))
+        else:
+            erro = "Senha incorreta. Tente novamente."
+
+    return render_template('login.html', erro=erro)
+
+@app.route('/logout')
+def logout():
+    session.pop('logado', None)
+    return redirect(url_for('login'))
+
 
 @app.route('/alterar_status', methods=['POST'])
 def alterar_status():
