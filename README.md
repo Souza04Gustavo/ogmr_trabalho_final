@@ -12,7 +12,8 @@ O sistema foi desenvolvido utilizando uma arquitetura baseada em microsserviços
 2. **Backend (Controlador):** Desenvolvido em **Python (Flask)**. Atua como o cérebro da aplicação, validando o IP de acesso (segurança), gerenciando a sessão de login e cruzando dados lógicos.
 3. **Banco de Dados:** **PostgreSQL**. Mantém o mapeamento da infraestrutura física (Switch ↔ Sala ↔ Máquina ↔ Porta `ifIndex`).
 4. **Motor SNMP (Agente de Rede):** Desenvolvido em **Java** usando a API **SNMP4J**. É compilado e executado em background pelo Python para disparar mensagens SNMP `SET`.
-5. **Simulador de Equipamento (Switch):** Utilizou-se o serviço `snmpd` do Linux (Ubuntu) com interfaces de rede virtuais (`dummy`) para simular as portas físicas de um switch gerenciável localmente.
+5. **Ambiente de Rede (Físico e Simulado):** O sistema é híbrido. Pode rodar utilizando o serviço `snmpd` local do Ubuntu (com interfaces `dummy`) para simulação, ou conectado a um **Switch Físico Real** (ex: D-Link) integrando-se nativamente à infraestrutura física via cabo.
+6. **Agendador de Tarefas (Crontab):** Integração automatizada com o subsistema `cron` do Linux. O Python calcula o `timedelta` e injeta regras diretamente no crontab para agendar o desbloqueio futuro (envio do pacote `SET` com `ifAdminStatus = 1`) de forma totalmente autônoma.
 
 ---
 
@@ -24,6 +25,9 @@ ogmr_trabalho_final/
 │   ├── GerenteSNMP.java     # Código fonte Java responsável pelo envio do PDU
 │   ├── GerenteSNMP.class    # Arquivo compilado 
 │   └── snmp4j-2.8.18.jar    # Biblioteca oficial da API SNMP4J
+├── static/                  # Arquivos de estilização e identidade visual (UDESC)
+│   ├── logo_udesc.png
+│   └── foto_prof.jpg
 ├── templates/               # Diretório de views do Flask
 │   └── index.html           # Interface do painel do professor
 ├── app.py                   # Aplicação principal Backend (Flask)
@@ -125,10 +129,53 @@ python3 app.py
 ```
 
 ### 5. Uso e Acesso
-Acesse a aplicação no navegador através de: `http://localhost:5000`.
-* O sistema possui uma validação de IP embutida. Apenas a máquina registrada como `professor` (no caso, seu localhost `127.0.0.1`) tem acesso à tela de login.
-* **Senha padrão:** `admin123`
+Acesse a aplicação no navegador de acordo com o seu ambiente:
+* **Ambiente Simulado:** `http://localhost:5000`
+* **Ambiente Físico (Cabo):** `http://<SEU_IP_CABEADO>:5000` (Ex: `http://10.90.90.200:5000`)
+ * O sistema possui validação estrita de segurança via **IP Address**. Apenas a máquina cadastrada como `professor` no banco de dados tem permissão para visualizar a tela de Login. Acessos externos são bloqueados com erro `HTTP 403 (Acesso Negado)`.
+ * * **Senha de acesso padrão:** `admin123`
 
 ---
-## ATENÇÃO: O TRABALHO AINDA NÃO ESTA COMPLETO!
-O sistema de login ainda esta ausente na versão atual e o sistema de agendamento por horarios tambem esta de fora!
+
+### 6. Transição para o Hardware Real (Switch Físico)
+Sendo um sistema *Data-Driven*, migrar do simulador para o hardware real (ex: Switch D-Link do Laboratório) **não exige alterações no código fonte**. Todo o direcionamento é feito via rede e banco de dados.
+ 
+**Passo A: Fixar o IP na placa de rede via terminal (nmcli)**
+Para evitar que o Ubuntu derrube a conexão por falta de um servidor DHCP no Switch, fixe seu IP e amarre-o à sua interface de rede (substitua `enx00e04c6800cc` pela sua placa):
+```bash
+sudo nmcli connection add type ethernet ifname enx00e04c6800cc con-name "Lab-Redes" ipv4.method manual ipv4.addresses 10.90.90.200/24
+sudo nmcli connection up "Lab-Redes"
+```
+ 
+**Passo B: Encontrar o IP do Switch na rede**
+Realize um *arp-scan* forçando o seu IP de origem (bypass) para obrigar o switch a responder:
+```bash
+sudo arp-scan -I enx00e04c6800cc --arpspa=10.90.90.200 10.90.90.0/24
+```
+ 
+**Passo C: Mapear os Índices Físicos (`ifIndex`)**
+Execute uma requisição de leitura SNMP no IP do switch encontrado para descobrir os identificadores numéricos exatos de cada porta:
+```bash
+snmpwalk -v2c -c public 10.90.90.90 ifDescr
+```
+ 
+**Passo D: Atualizar a Topologia no Banco de Dados**
+Com as portas mapeadas, informe o novo cenário ao PostgreSQL:
+```bash
+sudo -u postgres psql -d projeto_ogmr
+```
+```sql
+-- Atualiza IP e Community de Escrita do Switch Físico
+UPDATE switches SET ip_address = '10.90.90.90', snmp_community = 'private' WHERE id = 1;
+ 
+-- Define o novo IP do Professor e sua porta física (Ex: Porta 5)
+UPDATE maquinas SET ip_address = '10.90.90.200', porta_ifindex = 5 WHERE tipo = 'professor';
+ 
+-- Define o IP da máquina do Aluno e sua porta física (Ex: Porta 3)
+UPDATE maquinas SET ip_address = '10.90.90.101', porta_ifindex = 3 WHERE nome_host = 'PC-Aluno-01';
+\q
+```
+
+---
+
+
