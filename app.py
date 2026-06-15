@@ -1,6 +1,8 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 import psycopg2
 import subprocess
+from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
 
@@ -21,8 +23,8 @@ def checar_status_porta(ip, porta):
         oid = f"IF-MIB::ifAdminStatus.{porta}"
         
         resultado = subprocess.run(
-            ["snmpget", "-v2c", "-c", "public", "-Oqv", ip, oid],
-            capture_output=True, text=True, timeout=2
+            ["snmpget", "-v2c", "-c", "public", "-r", "1", "-Oqv", ip, oid],
+            capture_output=True, text=True, timeout=5
         )
         
         saida = resultado.stdout.strip().lower()
@@ -125,6 +127,7 @@ def alterar_status():
     data = request.json
     porta = data.get('porta')
     acao = data.get('acao') # 1 (Ligar) ou 2 (Desligar)
+    minutos = data.get('minutos')
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -156,18 +159,39 @@ def alterar_status():
     try:
         resultado = subprocess.run(
             ["java", "-cp", ".:snmp4j-2.8.18.jar", "GerenteSNMP", switch_ip, community, str(porta), str(acao)],
-            cwd="java_snmp", # Informa ao Python que o .jar e o arquivo Java estão dentro dessa pasta
-            capture_output=True,
-            text=True
+            cwd="java_snmp", capture_output=True, text=True
         )
         
         saida = resultado.stdout.strip()
         if "SUCESSO" in saida:
+            # FASE 7: Se tem minutos agendados e é ação de Bloqueio(2), chama o Crontab
+            if str(acao) == '2' and minutos and str(minutos).isdigit():
+                agendar_desbloqueio(switch_ip, community, porta, int(minutos))
+                return jsonify({"status": "sucesso", "mensagem": f"{saida} (Desbloqueio agendado para daqui a {minutos} min)"})
+                
             return jsonify({"status": "sucesso", "mensagem": saida})
         else:
             return jsonify({"status": "erro", "mensagem": saida})
     except Exception as e:
         return jsonify({"status": "erro", "mensagem": str(e)})
+
+@app.route('/status_portas')
+def status_portas():
+    if not session.get('logado'):
+        return jsonify({"erro": "Nao logado"}), 403
+        
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT m.porta_ifindex, sw.ip_address FROM maquinas m JOIN switches sw ON m.switch_id = sw.id")
+    maquinas = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    status_dict = {}
+    for porta, ip in maquinas:
+        status_dict[porta] = checar_status_porta(ip, porta)
+        
+    return jsonify(status_dict)
 
 @app.route('/alterar_status_sala', methods=['POST'])
 def alterar_status_sala():
@@ -209,6 +233,22 @@ def alterar_status_sala():
     
     acao_texto = "bloqueadas" if acao == 2 else "liberadas"
     return jsonify({"status": "sucesso", "mensagem": f"Todas as máquinas dos alunos foram {acao_texto} com sucesso!"})
+
+
+def agendar_desbloqueio(ip, community, porta, minutos):
+    agora = datetime.now()
+    futuro = agora + timedelta(minutes=int(minutos))
+    
+    # Formato do crontab Linux: MINUTO HORA DIA MES DIA_DA_SEMANA COMANDO
+    cron_time = f"{futuro.minute} {futuro.hour} {futuro.day} {futuro.month} *"
+    
+    cwd = os.path.abspath("java_snmp")
+    comando = f"cd {cwd} && java -cp .:snmp4j-2.8.18.jar GerenteSNMP {ip} {community} {porta} 1"
+    
+    cron_job = f"{cron_time} {comando}\n"
+    
+    # Executa comando bash que pega o crontab atual e insere a nova linha
+    os.system(f"(crontab -l 2>/dev/null; echo \"{cron_job}\") | crontab -")
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

@@ -13,11 +13,18 @@
             
             <a href="/logout" class="btn btn-sm btn-outline-light">Sair do Sistema</a>
 
-            <div>
-                <button class="btn btn-warning btn-sm fw-bold" onclick="alterarStatusSala(1, 2)">Bloquear Todos os Alunos</button>
-                <button class="btn btn-info btn-sm fw-bold text-white" onclick="alterarStatusSala(1, 1)">Liberar Todos os Alunos</button>
+            <div class="d-flex gap-2">
+                <button class="btn btn-danger btn-sm fw-bold" onclick="alterarStatusSala(1, 2)">Bloquear Todos</button>
+                <button class="btn btn-success btn-sm fw-bold" onclick="alterarStatusSala(1, 1)">Liberar Todos</button>
+                
+                <div class="input-group input-group-sm bg-white rounded" style="width: 200px;">
+                    <input type="number" id="min-sala-1" class="form-control" placeholder="Minutos" min="1">
+                    <button class="btn btn-warning fw-bold text-dark" onclick="agendarBloqueioSala(1)">⏳ Agendar</button>
+                </div>
             </div>
+
         </div>
+
         <div class="card-body">
             <table class="table table-hover align-middle">
                 <thead class="table-secondary">
@@ -30,6 +37,7 @@
                         <th>Ação de Bloqueio (Imediato)</th>
                     </tr>
                 </thead>
+                
                 <tbody>
                     {% for m in maquinas %}
                     <tr>
@@ -44,8 +52,8 @@
                         </td>
                         <td>Porta {{ m[4] }}</td>
                         
-                        <!-- Coluna de Status Dinâmico -->
-                        <td>
+                        <!-- Coluna de Status Dinâmico (Com o ID necessário para o AJAX Fase 8) -->
+                        <td id="status-porta-{{ m[4] }}">
                             {% if m[-1] == 'Liberada' %}
                                 <span class="badge bg-success">🟢 Liberada (UP)</span>
                             {% elif m[-1] == 'Bloqueada' %}
@@ -55,50 +63,96 @@
                             {% endif %}
                         </td>
 
+                        <!-- Coluna de Ações com os botões e Agendamento -->
                         <td>
-                            <button class="btn btn-outline-danger btn-sm" onclick="alterarStatus({{ m[4] }}, 2)">Desligar Porta</button>
-                            <button class="btn btn-outline-success btn-sm" onclick="alterarStatus({{ m[4] }}, 1)">Ligar Porta</button>
+                            <div class="d-flex flex-column gap-1">
+                                <!-- Botões Imediatos -->
+                                <div class="btn-group">
+                                    <button class="btn btn-outline-danger btn-sm" onclick="alterarStatus({{ m[4] }}, 2)">Desligar</button>
+                                    <button class="btn btn-outline-success btn-sm" onclick="alterarStatus({{ m[4] }}, 1)">Ligar</button>
+                                </div>
+                                <!-- Campo de Tempo e Botão Agendar -->
+                                <div class="input-group input-group-sm" style="width: 150px;">
+                                    <input type="number" id="min-{{ m[4] }}" class="form-control" placeholder="Min" min="1">
+                                    <button class="btn btn-warning" title="Agendar Bloqueio" onclick="agendarBloqueio({{ m[4] }})">⏳</button>
+                                </div>
+                            </div>
                         </td>
                     </tr>
                     {% endfor %}
                 </tbody>
+
             </table>
         </div>
     </div>
 </div>
 
 <script>
-// Ação Individual
 function alterarStatus(porta, acao) {
-    if (!confirm("Confirmar alteração de acesso desta máquina?")) return;
-
-    fetch('/alterar_status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ porta: porta, acao: acao })
-    })
-    .then(r => r.json())
-    .then(data => {
-        alert(data.mensagem);
-        location.reload(); // Recarrega a página para atualizar o status
-    });
+    if (!confirm(acao === 2 ? "Confirmar BLOQUEIO imediato?" : "Confirmar LIBERAÇÃO imediata?")) return;
+    enviarComando('/alterar_status', { porta: porta, acao: acao, minutos: null });
 }
 
 function alterarStatusSala(sala_id, acao) {
-    let msg = acao === 2 ? "Deseja BLOQUEAR a internet de TODOS os alunos desta sala?" : "Deseja LIBERAR a internet de todos?";
-    if (!confirm(msg)) return;
+    if (!confirm(acao === 2 ? "Bloquear TODOS imediatamente?" : "Liberar TODOS imediatamente?")) return;
+    enviarComando('/alterar_status_sala', { sala_id: sala_id, acao: acao, minutos: null });
+}
 
-    fetch('/alterar_status_sala', {
+function agendarBloqueio(porta) {
+    let inputMinutos = document.getElementById('min-' + porta).value;
+    if (!inputMinutos || inputMinutos <= 0) {
+        alert("Por favor, digite uma quantidade de minutos válida para agendar.");
+        return;
+    }
+    if (!confirm(`Deseja bloquear esta porta agora e agendar o desbloqueio para daqui a ${inputMinutos} minutos?`)) return;
+    enviarComando('/alterar_status', { porta: porta, acao: 2, minutos: inputMinutos });
+}
+
+function agendarBloqueioSala(sala_id) {
+    let inputMinutos = document.getElementById('min-sala-' + sala_id).value;
+    if (!inputMinutos || inputMinutos <= 0) {
+        alert("Por favor, digite o tempo em minutos para agendar o desbloqueio da sala.");
+        return;
+    }
+    if (!confirm(`Bloquear TODOS os alunos agora e agendar o desbloqueio para daqui a ${inputMinutos} minutos?`)) return;
+    enviarComando('/alterar_status_sala', { sala_id: sala_id, acao: 2, minutos: inputMinutos });
+}
+
+function enviarComando(url, payload) {
+    fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sala_id: sala_id, acao: acao })
+        body: JSON.stringify(payload)
     })
     .then(r => r.json())
     .then(data => {
         alert(data.mensagem);
-        location.reload(); // Recarrega a página para atualizar os status de todos
+        atualizarStatus();
     });
 }
+
+function atualizarStatus() {
+    fetch('/status_portas')
+    .then(r => r.json())
+    .then(data => {
+        for (const [porta, status] of Object.entries(data)) {
+            let celula = document.getElementById('status-porta-' + porta);
+            if (celula) {
+                if (status === 'Liberada') {
+                    celula.innerHTML = '<span class="badge bg-success">🟢 Liberada (UP)</span>';
+                } else if (status === 'Bloqueada') {
+                    celula.innerHTML = '<span class="badge bg-danger">🔴 Bloqueada (DOWN)</span>';
+                } else {
+                    celula.innerHTML = '<span class="badge bg-warning">⚠️ ' + status + '</span>';
+                }
+            }
+        }
+    });
+}
+
+setInterval(atualizarStatus, 5000);
+
+
 </script>
 </body>
 </html>
