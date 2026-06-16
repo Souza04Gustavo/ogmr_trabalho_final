@@ -47,9 +47,19 @@
             O sistema de Gerência de Redes é estritamente monitorado. Apenas a máquina autorizada do professor possui permissão para acessar este painel.
         </p>
         
-        <div class="ip-box">
-            <strong>Seu IP Atual:</strong><br>
-            <span class="text-danger fw-bold" style="font-size: 1.3rem;">{{ ip_visitante }}</span>
+
+        <div class="ip-box text-center">
+            <!-- Bloco do IP (Com linha divisória embaixo) -->
+            <div class="mb-3 pb-3 border-bottom border-secondary border-opacity-25">
+                <small class="text-muted text-uppercase d-block mb-1">Seu IP Atual:</small>
+                <span class="text-danger fw-bold" style="font-size: 1.3rem;">{{ ip_visitante }}</span>
+            </div>
+            
+            <!-- Bloco do MAC -->
+            <div>
+                <small class="text-muted text-uppercase d-block mb-1">Endereço Físico (MAC):</small>
+                <span class="text-danger fw-bold" style="font-size: 1.3rem;">{{ mac_visitante }}</span>
+            </div>
         </div>
 
         <div class="mt-4">
