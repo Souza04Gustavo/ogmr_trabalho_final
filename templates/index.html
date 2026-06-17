@@ -11,6 +11,9 @@
         .btn-group-custom { box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .status-pill { letter-spacing: 0.5px; }
         .toolbar-accent { border-left: 5px solid #0d6efd; } /* Detalhe azul na barra de ferramentas */
+        .linha-professor {
+            --bs-table-bg: #f0f5fc; 
+        }
     </style>
 </head>
 <body>
@@ -36,10 +39,7 @@
                     <button class="btn btn-success fw-semibold px-3" onclick="alterarStatusSala({{ sala_id }}, 1)">Liberar Todos</button>
                 </div>
                 
-                <div class="input-group btn-group-custom" style="width: 210px;">
-                    <input type="number" id="min-sala-{{ sala_id }}" class="form-control text-center bg-light border-secondary border-opacity-25" placeholder="Min" min="1">
-                    <button class="btn btn-warning fw-bold text-dark px-3" onclick="agendarBloqueioSala({{ sala_id }})">⏱ Agendar</button>
-                </div>
+                <button class="btn btn-warning fw-bold text-dark px-3 shadow-sm" onclick="abrirModalAgendamento({{ sala_id }}, 'sala')">📅 Agendamento Coletivo</button>
             </div>
         </div>
         
@@ -55,18 +55,20 @@
                         <th class="text-center fw-bold text-uppercase" style="font-size: 0.85rem;">Ações Individuais</th>
                     </tr>
                 </thead>
-                
+
                 <tbody class="border-top-0">
                     {% for m in maquinas %}
-                    <tr>
+                    
+                    <tr class="{% if m[5] == 'professor' %}linha-professor{% endif %}">
+                    
                         <!-- Máquina -->
-                        <td class="ps-4">
+                        <td class="ps-4 py-3 align-middle">
                             <span class="d-block text-dark fw-bold" style="font-size: 1.05rem;">{{ m[1] }}</span>
                             <small class="text-muted" style="font-family: monospace;">{{ m[2] }}</small>
                         </td>
                         
                         <!-- Tipo -->
-                        <td>
+                        <td class="align-middle">
                             {% if m[5] == 'professor' %}
                                 <span class="badge bg-primary px-3 py-2 rounded-pill fw-semibold">Professor</span>
                             {% else %}
@@ -75,12 +77,12 @@
                         </td>
                         
                         <!-- Porta -->
-                        <td class="text-dark fw-semibold">
+                        <td class="text-dark fw-semibold align-middle">
                             Porta {{ m[4] }}
                         </td>
                         
-                        <!-- Status Atual (Usando Unicode ao invés de Emojis) -->
-                        <td id="status-porta-{{ m[4] }}">
+                        <!-- Status Atual -->
+                        <td id="status-porta-{{ m[4] }}" class="align-middle">
                             {% if m[-1] == 'Liberada' %}
                                 <span class="badge bg-success bg-opacity-10 text-success border border-success px-3 py-2 rounded-pill status-pill">● Liberada (UP)</span>
                             {% elif m[-1] == 'Bloqueada' %}
@@ -90,28 +92,111 @@
                             {% endif %}
                         </td>
 
-                        <!-- Ações Individuais -->
-                        <td class="text-center">
-                            <div class="d-flex justify-content-center gap-2">
-                                <div class="btn-group btn-group-custom">
-                                    <button class="btn btn-outline-danger btn-sm fw-semibold px-3" onclick="alterarStatus({{ m[4] }}, 2)">Desligar</button>
-                                    <button class="btn btn-outline-success btn-sm fw-semibold px-3" onclick="alterarStatus({{ m[4] }}, 1)">Ligar</button>
+                        <td class="text-center align-middle">
+                            {% if m[5] != 'professor' %}
+                                <div class="d-flex justify-content-center gap-2">
+                                    <div class="btn-group btn-group-custom">
+                                        <button class="btn btn-outline-danger btn-sm fw-semibold px-3" onclick="alterarStatus({{ m[4] }}, 2)">Desligar</button>
+                                        <button class="btn btn-outline-success btn-sm fw-semibold px-3" onclick="alterarStatus({{ m[4] }}, 1)">Ligar</button>
+                                    </div>
+                                    <button class="btn btn-warning text-dark fw-bold shadow-sm" title="Agendar Bloqueio" onclick="abrirModalAgendamento({{ m[4] }}, 'porta')">📅 Agendar Bloqueio</button>
                                 </div>
-                                <div class="input-group input-group-sm btn-group-custom" style="width: 120px;">
-                                    <input type="number" id="min-{{ m[4] }}" class="form-control text-center bg-light border-secondary border-opacity-25" placeholder="Min" min="1">
-                                    <button class="btn btn-warning text-dark fw-bold" title="Agendar Bloqueio" onclick="agendarBloqueio({{ m[4] }})">⏱</button>
-                                </div>
-                            </div>
+                            {% else %}
+                                <span class="badge bg-secondary bg-opacity-25 text-secondary border border-secondary px-3 py-2 rounded-pill status-pill">
+                                    🔒 Ações Bloqueadas
+                                </span>
+                            {% endif %}
                         </td>
+                        
                     </tr>
                     {% endfor %}
                 </tbody>
+
             </table>
         </div>
     </div>
 </div>
 
+<!-- MODAL DE AGENDAMENTO -->
+<div class="modal fade" id="modalAgendamento" tabindex="-1" aria-labelledby="modalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow-lg">
+      <div class="modal-header bg-dark text-white border-0">
+        <h5 class="modal-title fw-semibold" id="modalLabel">📅 Agendamento Coletivo</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body bg-light p-4">
+        <p class="text-muted small mb-4">Selecione a data e a hora exata em que a internet deve ser cortada, e quando ela deve ser restabelecida.</p>
+        
+        <!-- Campos Ocultos para o JS saber quem estamos bloqueando -->
+        <input type="hidden" id="agenda-alvo-id">
+        <input type="hidden" id="agenda-tipo">
+
+        <div class="mb-3">
+            <label class="form-label fw-bold text-secondary text-uppercase" style="font-size: 0.8rem;">Início do Bloqueio (Data e Hora)</label>
+            <input type="datetime-local" id="agenda-inicio" class="form-control form-control-lg border-danger border-opacity-50">
+        </div>
+        
+        <div class="mb-3">
+            <label class="form-label fw-bold text-secondary text-uppercase" style="font-size: 0.8rem;">Fim do Bloqueio (Liberação Automática)</label>
+            <input type="datetime-local" id="agenda-fim" class="form-control form-control-lg border-success border-opacity-50">
+        </div>
+      </div>
+      <div class="modal-footer bg-white border-0">
+        <button type="button" class="btn btn-outline-secondary fw-semibold" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-warning fw-bold text-dark px-4" onclick="confirmarAgendamento()">Confirmar Agendamento</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
 <script>
+
+function abrirModalAgendamento(id, tipo) {
+    document.getElementById('agenda-alvo-id').value = id;
+    document.getElementById('agenda-tipo').value = tipo; // 'porta' ou 'sala'
+    
+    document.getElementById('agenda-inicio').value = '';
+    document.getElementById('agenda-fim').value = '';
+    
+    let modal = new bootstrap.Modal(document.getElementById('modalAgendamento'));
+    modal.show();
+}
+
+function confirmarAgendamento() {
+    let id = document.getElementById('agenda-alvo-id').value;
+    let tipo = document.getElementById('agenda-tipo').value;
+    let dataInicio = document.getElementById('agenda-inicio').value;
+    let dataFim = document.getElementById('agenda-fim').value;
+
+    if (!dataInicio || !dataFim) {
+        alert("Erro: Você precisa preencher tanto a Data de Início quanto a Data de Fim.");
+        return;
+    }
+
+    // Verifica se a data fim não é menor que a de início
+    if (new Date(dataFim) <= new Date(dataInicio)) {
+        alert("Erro: A Data de Fim deve ser posterior à Data de Início.");
+        return;
+    }
+
+    let modalEl = document.getElementById('modalAgendamento');
+    let modal = bootstrap.Modal.getInstance(modalEl);
+    modal.hide();
+
+    let payload = { acao: 2, data_inicio: dataInicio, data_fim: dataFim };
+
+    if (tipo === 'porta') {
+        payload.porta = id;
+        enviarComando('/alterar_status', payload);
+    } else if (tipo === 'sala') {
+        payload.sala_id = id;
+        enviarComando('/alterar_status_sala', payload);
+    }
+}
+
 function alterarStatus(porta, acao) {
     if (!confirm(acao === 2 ? "Confirmar BLOQUEIO imediato?" : "Confirmar LIBERAÇÃO imediata?")) return;
     enviarComando('/alterar_status', { porta: porta, acao: acao, minutos: null });
@@ -120,26 +205,6 @@ function alterarStatus(porta, acao) {
 function alterarStatusSala(sala_id, acao) {
     if (!confirm(acao === 2 ? "Bloquear TODOS imediatamente?" : "Liberar TODOS imediatamente?")) return;
     enviarComando('/alterar_status_sala', { sala_id: sala_id, acao: acao, minutos: null });
-}
-
-function agendarBloqueio(porta) {
-    let inputMinutos = document.getElementById('min-' + porta).value;
-    if (!inputMinutos || inputMinutos <= 0) {
-        alert("Por favor, digite uma quantidade de minutos válida para agendar.");
-        return;
-    }
-    if (!confirm(`Deseja bloquear esta porta agora e agendar o desbloqueio para daqui a ${inputMinutos} minutos?`)) return;
-    enviarComando('/alterar_status', { porta: porta, acao: 2, minutos: inputMinutos });
-}
-
-function agendarBloqueioSala(sala_id) {
-    let inputMinutos = document.getElementById('min-sala-' + sala_id).value;
-    if (!inputMinutos || inputMinutos <= 0) {
-        alert("Por favor, digite o tempo em minutos para agendar o desbloqueio da sala.");
-        return;
-    }
-    if (!confirm(`Bloquear TODOS os alunos agora e agendar o desbloqueio para daqui a ${inputMinutos} minutos?`)) return;
-    enviarComando('/alterar_status_sala', { sala_id: sala_id, acao: 2, minutos: inputMinutos });
 }
 
 function enviarComando(url, payload) {

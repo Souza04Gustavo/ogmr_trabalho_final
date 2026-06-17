@@ -44,19 +44,17 @@ def checar_status_porta(ip, porta):
         print(f"DEBUG EXCEÇÃO Porta {porta} -> {str(e)}")
         return "Erro ao ler"
 
-def agendar_desbloqueio(ip, community, porta, minutos):
-    agora = datetime.now()
-    futuro = agora + timedelta(minutes=int(minutos))
+def agendar_tarefa_cron(ip, community, porta, acao, data_str):
+    dt = datetime.strptime(data_str, '%Y-%m-%dT%H:%M')
     
     # Formato do crontab Linux: MINUTO HORA DIA MES DIA_DA_SEMANA COMANDO
-    cron_time = f"{futuro.minute} {futuro.hour} {futuro.day} {futuro.month} *"
+    cron_time = f"{dt.minute} {dt.hour} {dt.day} {dt.month} *"
     
     cwd = os.path.abspath("java_snmp")
-    comando = f"cd {cwd} && java -cp .:snmp4j-2.8.18.jar GerenteSNMP {ip} {community} {porta} 1"
+    comando = f"cd {cwd} && java -cp .:snmp4j-2.8.18.jar GerenteSNMP {ip} {community} {porta} {acao}"
     
     cron_job = f"{cron_time} {comando}\n"
     
-    # Executa comando bash que pega o crontab atual e insere a nova linha
     os.system(f"(crontab -l 2>/dev/null; echo \"{cron_job}\") | crontab -")
 
 def obter_mac_cliente(ip):
@@ -181,12 +179,11 @@ def alterar_status():
     data = request.json
     porta = data.get('porta')
     acao = data.get('acao') # 1 (Ligar) ou 2 (Desligar)
-    minutos = data.get('minutos')
+    data_inicio = data.get('data_inicio')
+    data_fim = data.get('data_fim')
 
     conn = get_db_connection()
     cur = conn.cursor()
-    
-    # 1. Pega os dados da máquina no banco para checar as regras de segurança
     cur.execute("SELECT tipo, switch_id FROM maquinas WHERE porta_ifindex = %s", (porta,))
     maquina = cur.fetchone()
     
@@ -196,34 +193,46 @@ def alterar_status():
     tipo_maquina = maquina[0]
     switch_id = maquina[1]
     
-    # Nunca bloquear o professor, servidor ou uplink!
     if tipo_maquina in ['professor', 'servidor', 'uplink'] and str(acao) == '2':
-        return jsonify({"status": "erro", "mensagem": f"Operação negada pelo sistema: É proibido cortar a internet de uma máquina do tipo '{tipo_maquina}'."})
+        return jsonify({"status": "erro", "mensagem": f"Operação negada pelo sistema."})
         
-    # 2. Pega o IP e senha do switch responsável por essa máquina
     cur.execute("SELECT ip_address, snmp_community FROM switches WHERE id = %s", (switch_id,))
     switch = cur.fetchone()
     switch_ip = switch[0]
     community = switch[1]
-    
     cur.close()
     conn.close()
 
-    # 3. Manda o Java executar o comando
+    agora = datetime.now()
+    is_futuro = False
+
+    # Se veio data de início e fim do Modal
+    if data_inicio and data_fim:
+        dt_inicio = datetime.strptime(data_inicio, '%Y-%m-%dT%H:%M')
+        
+        if dt_inicio > agora:
+            is_futuro = True
+            agendar_tarefa_cron(switch_ip, community, porta, 2, data_inicio)
+        
+        # SEMPRE agenda a LIBERAÇÃO para o horário de fim
+        agendar_tarefa_cron(switch_ip, community, porta, 1, data_fim)
+
+        if is_futuro:
+            data_inicio_pt = dt_inicio.strftime('%d/%m às %H:%M')
+            return jsonify({"status": "sucesso", "mensagem": f"Agendamento salvo! A porta desligará dia {data_inicio_pt}."})
+
     try:
         resultado = subprocess.run(
             ["java", "-cp", ".:snmp4j-2.8.18.jar", "GerenteSNMP", switch_ip, community, str(porta), str(acao)],
             cwd="java_snmp", capture_output=True, text=True
         )
-        
         saida = resultado.stdout.strip()
+        
         if "SUCESSO" in saida:
-            # FASE 7: Se tem minutos agendados e é ação de Bloqueio(2), chama o Crontab
-            if str(acao) == '2' and minutos and str(minutos).isdigit():
-                agendar_desbloqueio(switch_ip, community, porta, int(minutos))
-                return jsonify({"status": "sucesso", "mensagem": f"{saida} (Desbloqueio agendado para daqui a {minutos} min)"})
-                
-            return jsonify({"status": "sucesso", "mensagem": saida})
+            msg = "Comando imediato executado com sucesso!"
+            if data_inicio and data_fim:
+                msg += f" (E a liberação autônoma já foi agendada no servidor!)"
+            return jsonify({"status": "sucesso", "mensagem": msg})
         else:
             return jsonify({"status": "erro", "mensagem": saida})
     except Exception as e:
@@ -251,11 +260,12 @@ def status_portas():
 def alterar_status_sala():
     data = request.json
     sala_id = data.get('sala_id')
-    acao = data.get('acao') # 1 (Ligar) ou 2 (Desligar)
+    acao = data.get('acao')
+    data_inicio = data.get('data_inicio')
+    data_fim = data.get('data_fim')
 
     conn = get_db_connection()
     cur = conn.cursor()
-    # Pega APENAS as máquinas dos alunos daquela sala
     cur.execute("""
         SELECT m.porta_ifindex, sw.ip_address, sw.snmp_community 
         FROM maquinas m
@@ -269,25 +279,45 @@ def alterar_status_sala():
     if not maquinas_alvo:
         return jsonify({"status": "aviso", "mensagem": "Nenhuma máquina de aluno encontrada nesta sala."})
 
+    agora = datetime.now()
+    is_futuro = False
+
+    if data_inicio and data_fim:
+        dt_inicio = datetime.strptime(data_inicio, '%Y-%m-%dT%H:%M')
+        if dt_inicio > agora:
+            is_futuro = True
+
     erros = []
-    # Roda o Java para cada porta de aluno
     for porta, ip, community in maquinas_alvo:
-        try:
-            resultado = subprocess.run(
-                ["java", "-cp", ".:snmp4j-2.8.18.jar", "GerenteSNMP", ip, community, str(porta), str(acao)],
-                cwd="java_snmp", capture_output=True, text=True
-            )
-            if "SUCESSO" not in resultado.stdout:
-                erros.append(f"Porta {porta}: Falhou.")
-        except Exception as e:
-            erros.append(f"Porta {porta}: {str(e)}")
+        # Agenda as tarefas no Crontab
+        if data_inicio and data_fim:
+            if is_futuro:
+                agendar_tarefa_cron(ip, community, porta, 2, data_inicio)
+            agendar_tarefa_cron(ip, community, porta, 1, data_fim)
+            
+        if not is_futuro:
+            try:
+                resultado = subprocess.run(
+                    ["java", "-cp", ".:snmp4j-2.8.18.jar", "GerenteSNMP", ip, community, str(porta), str(acao)],
+                    cwd="java_snmp", capture_output=True, text=True
+                )
+                if "SUCESSO" not in resultado.stdout:
+                    erros.append(f"Porta {porta}: Falhou.")
+            except Exception as e:
+                erros.append(f"Porta {porta}: {str(e)}")
+
+    if is_futuro:
+        dt_inicio_pt = dt_inicio.strftime('%d/%m às %H:%M')
+        return jsonify({"status": "sucesso", "mensagem": f"Agendamento da sala concluído! O bloqueio começará dia {dt_inicio_pt}."})
 
     if erros:
         return jsonify({"status": "aviso", "mensagem": "Feito, mas com erros:\n" + "\n".join(erros)})
     
-    acao_texto = "bloqueadas" if acao == 2 else "liberadas"
-    return jsonify({"status": "sucesso", "mensagem": f"Todas as máquinas dos alunos foram {acao_texto} com sucesso!"})
-
+    msg_final = "Acesso da sala alterado com sucesso!"
+    if data_inicio and data_fim:
+        msg_final += " (A liberação automática dos alunos também foi programada)."
+        
+    return jsonify({"status": "sucesso", "mensagem": msg_final})
 
 
 if __name__ == '__main__':
