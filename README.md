@@ -9,11 +9,11 @@ O objetivo deste projeto é implementar um sistema de controle de acesso à Inte
 O sistema foi desenvolvido utilizando uma arquitetura baseada em microsserviços e integração de múltiplas linguagens para atender aos requisitos da disciplina:
 
 1. **Frontend (Interface Web):** Desenvolvido em HTML5, CSS (Bootstrap) e JavaScript (AJAX). Responsável por exibir o status em tempo real e receber os comandos do usuário.
-2. **Backend (Controlador):** Desenvolvido em **Python (Flask)**. Atua como o cérebro da aplicação, validando o IP de acesso (segurança), gerenciando a sessão de login e cruzando dados lógicos.
+2. **Backend (Controlador):** Desenvolvido em Python (Flask). Atua como o cérebro da aplicação, efetuando a validação de segurança avançada na Camada 2 (Endereço MAC via tabela ARP), gerenciando a sessão multitenancy (1 professor por sala) e cruzando dados lógicos.
 3. **Banco de Dados:** **PostgreSQL**. Mantém o mapeamento da infraestrutura física (Switch ↔ Sala ↔ Máquina ↔ Porta `ifIndex`).
 4. **Motor SNMP (Agente de Rede):** Desenvolvido em **Java** usando a API **SNMP4J**. É compilado e executado em background pelo Python para disparar mensagens SNMP `SET`.
 5. **Ambiente de Rede (Físico e Simulado):** O sistema é híbrido. Pode rodar utilizando o serviço `snmpd` local do Ubuntu (com interfaces `dummy`) para simulação, ou conectado a um **Switch Físico Real** (ex: D-Link) integrando-se nativamente à infraestrutura física via cabo.
-6. **Agendador de Tarefas (Crontab):** Integração automatizada com o subsistema `cron` do Linux. O Python calcula o `timedelta` e injeta regras diretamente no crontab para agendar o desbloqueio futuro (envio do pacote `SET` com `ifAdminStatus = 1`) de forma totalmente autônoma.
+6. **Agendador de Tarefas (Crontab):** Integração automatizada com o subsistema cron do Linux. O Python converte entradas absolutas de calendário (datetime-local) e injeta regras diretamente no crontab para agendar o bloqueio e o desbloqueio futuro de forma totalmente autônoma.
 
 ---
 
@@ -97,14 +97,34 @@ Crie as tabelas e insira os dados do ambiente de teste simulado:
 ```sql
 CREATE TABLE switches (id SERIAL PRIMARY KEY, nome VARCHAR(50), ip_address VARCHAR(50), snmp_community VARCHAR(50) DEFAULT 'private');
 CREATE TABLE salas (id SERIAL PRIMARY KEY, nome VARCHAR(50));
-CREATE TABLE maquinas (id SERIAL PRIMARY KEY, nome_host VARCHAR(50), ip_address VARCHAR(50) UNIQUE, mac_address VARCHAR(50) UNIQUE, sala_id INT, switch_id INT, porta_ifindex INT, tipo VARCHAR(20) DEFAULT 'aluno');
+
+-- Nova estrutura baseada no Endereço MAC
+CREATE TABLE maquinas (
+    mac_address VARCHAR(50) PRIMARY KEY,
+    nome_host VARCHAR(50) NOT NULL,
+    ip_address VARCHAR(50) UNIQUE NOT NULL,
+    sala_id INT REFERENCES salas(id),
+    switch_id INT REFERENCES switches(id),
+    porta_ifindex INT NOT NULL,
+    tipo VARCHAR(20) DEFAULT 'aluno'
+);
+
+-- Regra de Negócio: Apenas 1 professor permitido por sala
+CREATE UNIQUE INDEX unq_professor_por_sala ON maquinas (sala_id) WHERE tipo = 'professor';
 
 -- Populando o banco com o cenário do simulador local
 INSERT INTO switches (nome, ip_address, snmp_community) VALUES ('Switch_Core', '127.0.0.1', 'private');
 INSERT INTO salas (nome) VALUES ('Sala F203');
-INSERT INTO maquinas (nome_host, ip_address, mac_address, sala_id, switch_id, porta_ifindex, tipo) VALUES ('PC-Professor', '127.0.0.1', 'AA:BB:CC:DD:EE:11', 1, 1, 11, 'professor');
-INSERT INTO maquinas (nome_host, ip_address, mac_address, sala_id, switch_id, porta_ifindex, tipo) VALUES ('PC-Aluno-01', '192.168.1.101', 'AA:BB:CC:DD:EE:22', 1, 1, 12, 'aluno');
-INSERT INTO maquinas (nome_host, ip_address, mac_address, sala_id, switch_id, porta_ifindex, tipo) VALUES ('PC-Aluno-02', '192.168.1.102', 'AA:BB:CC:DD:EE:33', 1, 1, 13, 'aluno');
+
+-- ATENÇÃO: Substitua 'E4:FD...' pelo MAC Address real da sua máquina (descubra com o comando 'ip a')
+INSERT INTO maquinas (mac_address, nome_host, ip_address, sala_id, switch_id, porta_ifindex, tipo) 
+VALUES ('E4:FD:45:AB:01:D5', 'MEU-PC', '127.0.0.1', 1, 1, 11, 'professor');
+
+INSERT INTO maquinas (mac_address, nome_host, ip_address, sala_id, switch_id, porta_ifindex, tipo) 
+VALUES ('AA:BB:CC:DD:EE:22', 'PC-Aluno-01', '192.168.1.101', 1, 1, 12, 'aluno');
+
+INSERT INTO maquinas (mac_address, nome_host, ip_address, sala_id, switch_id, porta_ifindex, tipo) 
+VALUES ('AA:BB:CC:DD:EE:33', 'PC-Aluno-02', '192.168.1.102', 1, 1, 13, 'aluno');
 \q
 ```
 
@@ -132,7 +152,7 @@ python3 app.py
 Acesse a aplicação no navegador de acordo com o seu ambiente:
 * **Ambiente Simulado:** `http://localhost:5000`
 * **Ambiente Físico (Cabo):** `http://<SEU_IP_CABEADO>:5000` (Ex: `http://10.90.90.200:5000`)
- * O sistema possui validação estrita de segurança via **IP Address**. Apenas a máquina cadastrada como `professor` no banco de dados tem permissão para visualizar a tela de Login. Acessos externos são bloqueados com erro `HTTP 403 (Acesso Negado)`.
+ * O sistema possui validação estrita de segurança baseada no Endereço Físico (MAC Address). O Python varre a tabela ARP e as interfaces físicas do servidor para garantir que apenas o equipamento exato cadastrado como professor tenha permissão para visualizar a tela de Login. Acessos de outros dispositivos exibirão uma tela de "Acesso Negado", dedurando o IP e o MAC do invasor.
  * * **Senha de acesso padrão:** `admin123`
 
 ---
@@ -165,13 +185,14 @@ Com as portas mapeadas, informe o novo cenário ao PostgreSQL:
 sudo -u postgres psql -d projeto_ogmr
 ```
 ```sql
--- Atualiza IP e Community de Escrita do Switch Físico
+-- 1. Atualiza IP e Community de Escrita do Switch Físico
 UPDATE switches SET ip_address = '10.90.90.90', snmp_community = 'private' WHERE id = 1;
  
--- Define o novo IP do Professor e sua porta física (Ex: Porta 5)
+-- 2. Atualiza a porta física e o IP do Professor 
+-- NOTA: Se você passou a usar um Adaptador USB ao invés do Wi-Fi, atualize a coluna mac_address também!
 UPDATE maquinas SET ip_address = '10.90.90.200', porta_ifindex = 5 WHERE tipo = 'professor';
  
--- Define o IP da máquina do Aluno e sua porta física (Ex: Porta 3)
+-- 3. Atualiza o IP da máquina do Aluno e sua porta física (Ex: Porta 3)
 UPDATE maquinas SET ip_address = '10.90.90.101', porta_ifindex = 3 WHERE nome_host = 'PC-Aluno-01';
 \q
 ```
